@@ -8,6 +8,28 @@ PUR='\033[1;35m'
 CYAN='\033[1;36m'
 NC='\033[0m'
 
+# Auto-detect volumes
+detect_volumes() {
+    # Find Data volume (contains user data)
+    DATA_VOL=$(ls -d /Volumes/*Data* 2>/dev/null | head -n 1)
+    [ -z "$DATA_VOL" ] && DATA_VOL=$(find /Volumes -maxdepth 1 -type d -name "*Data" 2>/dev/null | head -n 1)
+    
+    # Find System volume (contains macOS)
+    SYS_VOL=$(ls -d /Volumes/Preinstall 2>/dev/null)
+    [ -z "$SYS_VOL" ] && SYS_VOL=$(ls -d /Volumes/Macintosh* 2>/dev/null | grep -v Data | head -n 1)
+    [ -z "$SYS_VOL" ] && SYS_VOL=$(find /Volumes -maxdepth 1 -type d ! -name "*Data*" ! -name "macOS*" -name "*" 2>/dev/null | grep -v "^/Volumes/$" | head -n 1)
+    
+    printf "${CYAN}Detected volumes:${NC}\n"
+    printf "System: ${GRN}%s${NC}\n" "${SYS_VOL:-NOT FOUND}"
+    printf "Data:   ${GRN}%s${NC}\n\n" "${DATA_VOL:-NOT FOUND}"
+    
+    if [ -z "$SYS_VOL" ] || [ -z "$DATA_VOL" ]; then
+        printf "${RED}Error: Cannot detect volumes. Available:${NC}\n"
+        ls -1 /Volumes/
+        return 1
+    fi
+}
+
 get_serial_number() {
     local serialNumber
     serialNumber=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Serial Number" | head -n 1 | awk -F": " '{print $2}')
@@ -66,7 +88,12 @@ check_hardware() {
 }
 
 create_temp_user() {
-    local dscl_path='/Volumes/Untitled - Data/private/var/db/dslocal/nodes/Default'
+    local dscl_path="$DATA_VOL/private/var/db/dslocal/nodes/Default"
+    
+    if [ ! -d "$dscl_path" ]; then
+        printf "${RED}Error: Path not found: $dscl_path${NC}\n"
+        return 1
+    fi
     
     read -p "👤 Enter temporary username (default: Apple): " username
     read -p "📝 Enter full name (default: Apple User): " fullname
@@ -80,13 +107,20 @@ create_temp_user() {
     dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$username" RealName "$fullname"
     dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$username" UniqueID "501"
     dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$username" PrimaryGroupID "20"
-    mkdir -p "/Volumes/Untitled - Data/Users/$username"
+    mkdir -p "$DATA_VOL/Users/$username"
     dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$username" NFSHomeDirectory "/Users/$username"
     dscl -f "$dscl_path" localhost -passwd "/Local/Default/Users/$username" "$password"
     dscl -f "$dscl_path" localhost -append "/Local/Default/Groups/admin" GroupMembership "$username"
 }
 
 block_mdm_servers() {
+    local hosts_file="$SYS_VOL/etc/hosts"
+    
+    if [ ! -f "$hosts_file" ]; then
+        printf "${RED}Error: hosts file not found: $hosts_file${NC}\n"
+        return 1
+    fi
+    
     printf "${YEL}⛔ Blocking MDM servers...${NC}\n"
     {
         printf "0.0.0.0 deviceenrollment.apple.com\n"
@@ -94,20 +128,23 @@ block_mdm_servers() {
         printf "0.0.0.0 iprofiles.apple.com\n"
         printf "0.0.0.0 gdmf.apple.com\n"
         printf "0.0.0.0 albert.apple.com\n"
-    } >> "/Volumes/Preinstall/etc/hosts"
+    } >> "$hosts_file"
 }
 
 remove_mdm_profiles() {
     printf "${YEL}🧹 Removing MDM profiles...${NC}\n"
-    rm -rf "/Volumes/Preinstall/var/db/ConfigurationProfiles/Settings/.cloudConfig"*
-    touch "/Volumes/Preinstall/var/db/ConfigurationProfiles/Settings/.cloudConfigProfileInstalled"
-    touch "/Volumes/Untitled - Data/private/var/db/.AppleSetupDone"
+    rm -rf "$SYS_VOL/var/db/ConfigurationProfiles/Settings/.cloudConfig"* 2>/dev/null
+    touch "$SYS_VOL/var/db/ConfigurationProfiles/Settings/.cloudConfigProfileInstalled"
+    touch "$DATA_VOL/private/var/db/.AppleSetupDone"
 }
 
 main() {
     rm -- "$0" 2>/dev/null
     clear
     display_header
+
+    # Detect volumes first
+    detect_volumes || exit 1
 
     local serial
     serial=$(get_serial_number)
@@ -131,7 +168,6 @@ main() {
         case $opt in
             "Bypass MDM Protection")
                 printf "${YEL}🚀 Starting MDM bypass sequence...${NC}\n"
-                [ -d "/Volumes/Untitled - Data" ] && diskutil rename "Untitled - Data" "Data"
                 create_temp_user
                 block_mdm_servers
                 remove_mdm_profiles
