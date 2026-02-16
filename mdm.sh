@@ -88,19 +88,115 @@ detect_volumes() {
         log ERROR "DSCL path missing: $dscl_path"
     fi
     
-    local hosts_file="$SYS_VOL/etc/hosts"
-    if [ -f "$hosts_file" ]; then
-        log OK "Hosts file exists: $hosts_file"
-    else
-        log ERROR "Hosts file missing: $hosts_file"
+    # Auto-search and create hosts file
+    log STEP "Searching for hosts file..."
+    local hosts_file=""
+    
+    # Search in common locations
+    for path in "$SYS_VOL/etc/hosts" "$SYS_VOL/private/etc/hosts"; do
+        if [ -f "$path" ]; then
+            hosts_file="$path"
+            log OK "Hosts file found: $hosts_file"
+            break
+        fi
+    done
+    
+    # If not found, search entire volume
+    if [ -z "$hosts_file" ]; then
+        log WARN "Hosts file not in standard location, searching volume..."
+        hosts_file=$(find "$SYS_VOL" -name "hosts" -path "*/etc/hosts" 2>/dev/null | head -n 1)
+        
+        if [ -n "$hosts_file" ]; then
+            log OK "Hosts file found via search: $hosts_file"
+        fi
     fi
     
-    local config_path="$SYS_VOL/var/db/ConfigurationProfiles/Settings"
-    if [ -d "$config_path" ]; then
-        log OK "Config path exists: $config_path"
-    else
-        log WARN "Config path missing: $config_path (will be created)"
+    # If still not found, create it
+    if [ -z "$hosts_file" ]; then
+        log WARN "Hosts file not found, creating new one..."
+        
+        # Try to create in standard locations
+        for etc_path in "$SYS_VOL/etc" "$SYS_VOL/private/etc"; do
+            if [ -d "$etc_path" ] || mkdir -p "$etc_path" 2>/dev/null; then
+                hosts_file="$etc_path/hosts"
+                log STEP "Creating hosts file at: $hosts_file"
+                
+                # Create basic hosts file
+                cat > "$hosts_file" <<EOF
+##
+# Host Database
+#
+# localhost is used to configure the loopback interface
+# when the system is booting.  Do not change this entry.
+##
+127.0.0.1       localhost
+255.255.255.255 broadcasthost
+::1             localhost
+EOF
+                
+                if [ -f "$hosts_file" ]; then
+                    log OK "Hosts file created successfully"
+                    break
+                else
+                    log ERROR "Failed to create hosts file at $hosts_file"
+                    hosts_file=""
+                fi
+            fi
+        done
+        
+        if [ -z "$hosts_file" ]; then
+            log ERROR "Could not create hosts file in any location"
+            return 1
+        fi
     fi
+    
+    # Store hosts file location globally
+    HOSTS_FILE="$hosts_file"
+    
+    # Auto-search and create config path
+    log STEP "Searching for ConfigurationProfiles path..."
+    local config_path=""
+    
+    # Search in common locations
+    for path in "$SYS_VOL/var/db/ConfigurationProfiles/Settings" "$SYS_VOL/private/var/db/ConfigurationProfiles/Settings"; do
+        if [ -d "$path" ]; then
+            config_path="$path"
+            log OK "Config path found: $config_path"
+            break
+        fi
+    done
+    
+    # If not found, search entire volume
+    if [ -z "$config_path" ]; then
+        log WARN "Config path not in standard location, searching volume..."
+        config_path=$(find "$SYS_VOL" -type d -path "*/ConfigurationProfiles/Settings" 2>/dev/null | head -n 1)
+        
+        if [ -n "$config_path" ]; then
+            log OK "Config path found via search: $config_path"
+        fi
+    fi
+    
+    # If still not found, create it
+    if [ -z "$config_path" ]; then
+        log WARN "Config path not found, creating..."
+        
+        # Try to create in standard locations
+        for var_path in "$SYS_VOL/var/db/ConfigurationProfiles/Settings" "$SYS_VOL/private/var/db/ConfigurationProfiles/Settings"; do
+            if mkdir -p "$var_path" 2>/dev/null; then
+                config_path="$var_path"
+                log OK "Config path created: $config_path"
+                break
+            fi
+        done
+        
+        if [ -z "$config_path" ]; then
+            log ERROR "Could not create config path"
+            return 1
+        fi
+    fi
+    
+    # Store config path globally
+    CONFIG_PATH="$config_path"
     
     echo
 }
@@ -215,17 +311,15 @@ create_temp_user() {
 }
 
 block_mdm_servers() {
-    local hosts_file="$SYS_VOL/etc/hosts"
-    
     log STEP "Blocking MDM servers..."
-    log INFO "Target hosts file: $hosts_file"
+    log INFO "Target hosts file: $HOSTS_FILE"
     
-    if [ ! -f "$hosts_file" ]; then
-        log ERROR "Hosts file not found: $hosts_file"
+    if [ ! -f "$HOSTS_FILE" ]; then
+        log ERROR "Hosts file not accessible: $HOSTS_FILE"
         return 1
     fi
     
-    log INFO "Current hosts file size: $(wc -l < "$hosts_file") lines"
+    log INFO "Current hosts file size: $(wc -l < "$HOSTS_FILE") lines"
     
     log STEP "Adding MDM server blocks..."
     {
@@ -234,11 +328,11 @@ block_mdm_servers() {
         echo "0.0.0.0 iprofiles.apple.com"
         echo "0.0.0.0 gdmf.apple.com"
         echo "0.0.0.0 albert.apple.com"
-    } >> "$hosts_file"
+    } >> "$HOSTS_FILE"
     
     if [ $? -eq 0 ]; then
         log OK "MDM servers blocked successfully"
-        log INFO "New hosts file size: $(wc -l < "$hosts_file") lines"
+        log INFO "New hosts file size: $(wc -l < "$HOSTS_FILE") lines"
         log INFO "Blocked servers:"
         log INFO "  - deviceenrollment.apple.com"
         log INFO "  - mdmenrollment.apple.com"
@@ -254,20 +348,18 @@ block_mdm_servers() {
 
 remove_mdm_profiles() {
     log STEP "Removing MDM profiles..."
-    
-    local config_path="$SYS_VOL/var/db/ConfigurationProfiles/Settings"
-    log INFO "Config path: $config_path"
+    log INFO "Config path: $CONFIG_PATH"
     
     log STEP "Removing .cloudConfig files..."
-    if rm -rf "$config_path/.cloudConfig"* 2>/dev/null; then
+    if rm -rf "$CONFIG_PATH/.cloudConfig"* 2>/dev/null; then
         log OK "Removed .cloudConfig files"
     else
         log WARN "No .cloudConfig files found (may already be clean)"
     fi
     
     log STEP "Creating .cloudConfigProfileInstalled marker..."
-    if touch "$config_path/.cloudConfigProfileInstalled"; then
-        log OK "Marker created: $config_path/.cloudConfigProfileInstalled"
+    if touch "$CONFIG_PATH/.cloudConfigProfileInstalled"; then
+        log OK "Marker created: $CONFIG_PATH/.cloudConfigProfileInstalled"
     else
         log ERROR "Failed to create marker"
     fi
