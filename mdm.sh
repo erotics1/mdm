@@ -1,5 +1,4 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
 RED='\033[1;31m'
 GRN='\033[1;32m'
 BLU='\033[1;34m'
@@ -61,7 +60,13 @@ block_mdm() {
     [ ! -f "$hosts" ] && { printf "${RED}hosts file not found${NC}\n"; return 1; }
     
     printf "${YEL}Blocking MDM...${NC}\n"
-    printf "0.0.0.0 deviceenrollment.apple.com\n0.0.0.0 mdmenrollment.apple.com\n0.0.0.0 iprofiles.apple.com\n0.0.0.0 gdmf.apple.com\n0.0.0.0 albert.apple.com\n" >> "$hosts"
+    cat >> "$hosts" <<EOF
+0.0.0.0 deviceenrollment.apple.com
+0.0.0.0 mdmenrollment.apple.com
+0.0.0.0 iprofiles.apple.com
+0.0.0.0 gdmf.apple.com
+0.0.0.0 albert.apple.com
+EOF
     printf "${GRN}✓ Done${NC}\n"
 }
 
